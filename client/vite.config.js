@@ -8,4 +8,8 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  build: {
+    // The 3D globe (three.js) is a large but lazy-loaded chunk; this is expected.
+    chunkSizeWarningLimit: 2000,
+  },
 });

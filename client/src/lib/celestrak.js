@@ -1,13 +1,60 @@
 import { getCategory } from './categories.js';
 
 // CelesTrak serves TLE data with `Access-Control-Allow-Origin: *`, so the browser
-// can fetch it directly — no backend needed. We cache per group (in memory and in
-// localStorage) so we don't re-poll CelesTrak, matching their usage guidance.
+// fetches it directly — no backend needed.
+//
+// Important: CelesTrak updates each group every ~2 hours and returns HTTP 403
+// ("GP data has not updated since your last successful download") if you refetch
+// before then. So clients MUST cache. We cache in IndexedDB (localStorage is too
+// small for the ~16k "active" set) and, on a 403, keep serving the cached copy.
 const BASE = 'https://celestrak.org/NORAD/elements/gp.php';
-const TTL_MS = 3 * 60 * 60 * 1000; // 3 hours — TLEs update ~daily
+const TTL_MS = 2 * 60 * 60 * 1000; // 2 hours — matches CelesTrak's update cadence
 const mem = new Map(); // group -> { data, fetchedAt }
 
-const lsKey = (group) => `st_tle_${group}`;
+// ---- tiny IndexedDB key/value cache (falls back to memory-only if unavailable) ----
+const DB_NAME = 'satellite-tracker';
+const STORE = 'tle';
+let dbPromise = null;
+
+function openDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  }).catch(() => null);
+  return dbPromise;
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openDB();
+  if (!db) return;
+  try {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(value, key);
+  } catch {
+    /* ignore */
+  }
+}
 
 // Parse standard 3-line TLE blocks into { name, noradId, line1, line2 }.
 export function parseTle(text) {
@@ -37,40 +84,40 @@ export function parseTle(text) {
   return records;
 }
 
+async function loadCached(group) {
+  if (mem.has(group)) return mem.get(group);
+  const stored = await idbGet(group);
+  if (stored) mem.set(group, stored);
+  return stored;
+}
+
 async function fetchGroup(group) {
   const now = Date.now();
-
-  const cached = mem.get(group);
+  const cached = await loadCached(group);
   if (cached && now - cached.fetchedAt < TTL_MS) return cached.data;
-
-  // Fall back to a persisted copy from a previous visit.
-  try {
-    const raw = localStorage.getItem(lsKey(group));
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (now - parsed.fetchedAt < TTL_MS) {
-        mem.set(group, parsed);
-        return parsed.data;
-      }
-    }
-  } catch {
-    /* ignore malformed / unavailable storage */
-  }
 
   try {
     const res = await fetch(`${BASE}?GROUP=${encodeURIComponent(group)}&FORMAT=tle`);
-    if (!res.ok) throw new Error(`CelesTrak "${group}" responded ${res.status}`);
+
+    if (!res.ok) {
+      // 403 = "no newer data since your last download" → our cache is still current.
+      if (cached) {
+        const refreshed = { data: cached.data, fetchedAt: now };
+        mem.set(group, refreshed);
+        idbSet(group, refreshed);
+        return cached.data;
+      }
+      if (res.status === 403) {
+        throw new Error('CelesTrak has no newer data yet (it updates every 2 h). Try again shortly.');
+      }
+      throw new Error(`CelesTrak "${group}" responded ${res.status}`);
+    }
+
     const text = await res.text();
     const data = text.includes('No GP data found') ? [] : parseTle(text);
     const entry = { data, fetchedAt: Date.now() };
     mem.set(group, entry);
-    // Best-effort persistence; large groups may exceed the localStorage quota,
-    // in which case we just keep the in-memory copy for this session.
-    try {
-      localStorage.setItem(lsKey(group), JSON.stringify(entry));
-    } catch {
-      /* quota exceeded — fine */
-    }
+    idbSet(group, entry);
     return data;
   } catch (err) {
     if (cached) return cached.data; // serve stale rather than fail
@@ -79,17 +126,23 @@ async function fetchGroup(group) {
 }
 
 // Fetch a category (one or more groups), merged and deduped by NORAD id.
+// Throws only if every group failed with nothing cached to fall back on.
 export async function getCategoryData(categoryId) {
   const category = getCategory(categoryId);
   if (!category) throw new Error(`Unknown category "${categoryId}"`);
 
-  const results = await Promise.all(category.groups.map((g) => fetchGroup(g).catch(() => [])));
+  const settled = await Promise.allSettled(category.groups.map((g) => fetchGroup(g)));
 
   const byId = new Map();
-  for (const list of results) {
-    for (const rec of list) {
-      if (!byId.has(rec.noradId)) byId.set(rec.noradId, rec);
+  let anyOk = false;
+  for (const s of settled) {
+    if (s.status === 'fulfilled') {
+      anyOk = true;
+      for (const rec of s.value) if (!byId.has(rec.noradId)) byId.set(rec.noradId, rec);
     }
+  }
+  if (!anyOk) {
+    throw new Error(settled.find((s) => s.status === 'rejected')?.reason?.message || 'Could not load satellite data.');
   }
   return [...byId.values()];
 }

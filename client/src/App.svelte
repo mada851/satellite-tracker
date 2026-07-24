@@ -9,7 +9,7 @@
   import SatelliteDetail from './components/SatelliteDetail.svelte';
   import { fetchCategories, fetchTles } from './lib/api.js';
   import { toSatrec } from './lib/propagate.js';
-  import { categories, category, records, status, clock } from './lib/stores.js';
+  import { categories, category, records, status, clock, viewMode } from './lib/stores.js';
   import { startClock, stopClock } from './lib/clock.js';
 
   let loadedCategory = null;
@@ -21,7 +21,7 @@
     try {
       categories.set(await fetchCategories());
     } catch {
-      status.set({ loading: false, error: 'Backend unreachable — is the server running?', count: 0 });
+      status.set({ loading: false, error: 'Could not load categories.', count: 0 });
     }
   });
 
@@ -58,11 +58,22 @@
   }
 
   $: simTime = new Date($clock.time);
+
+  // Lazy-load the 3D globe (and its Three.js bundle) only when first selected.
+  let globePromise = null;
+  $: if ($viewMode === '3d' && !globePromise) {
+    globePromise = import('./components/Globe.svelte').then((m) => m.default);
+  }
 </script>
 
 <div class="app">
   <header>
     <div class="brand"><span class="logo">🛰️</span> <strong>Satellite Tracker</strong></div>
+
+    <div class="viewtoggle" role="group" aria-label="View mode">
+      <button class:active={$viewMode === '2d'} on:click={() => viewMode.set('2d')}>2D Map</button>
+      <button class:active={$viewMode === '3d'} on:click={() => viewMode.set('3d')}>3D Globe</button>
+    </div>
 
     <div class="controls">
       <button class="tc" class:warn={$clock.paused} on:click={togglePause}>
@@ -99,7 +110,19 @@
     </aside>
 
     <main class="map-wrap">
-      <LeafletMap />
+      {#if $viewMode === '3d'}
+        {#if globePromise}
+          {#await globePromise}
+            <div class="view-loading">Loading 3D globe…</div>
+          {:then GlobeView}
+            <svelte:component this={GlobeView} />
+          {:catch}
+            <div class="view-loading">3D globe failed to load — switch back to 2D Map.</div>
+          {/await}
+        {/if}
+      {:else}
+        <LeafletMap />
+      {/if}
       <div class="legend">
         <span><i class="dot sat"></i> satellite</span>
         <span><i class="dot me"></i> you</span>
@@ -132,6 +155,43 @@
   }
   .logo {
     font-size: 1.1rem;
+  }
+
+  .viewtoggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .viewtoggle button {
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    background: var(--chip);
+    color: var(--muted);
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .viewtoggle button + button {
+    border-left: 1px solid var(--border);
+  }
+  .viewtoggle button:hover {
+    color: var(--text);
+  }
+  .viewtoggle button.active {
+    background: var(--accent);
+    color: #06231f;
+    font-weight: 600;
+  }
+
+  .view-loading {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    background: #0b1020;
+    font-size: 0.9rem;
   }
 
   .controls {
