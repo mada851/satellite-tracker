@@ -8,8 +8,9 @@
   import PassPredictions from './components/PassPredictions.svelte';
   import SatelliteDetail from './components/SatelliteDetail.svelte';
   import { fetchCategories, fetchTles } from './lib/api.js';
+  import { getCategory } from './lib/categories.js';
   import { toSatrec } from './lib/propagate.js';
-  import { categories, category, records, status, clock, viewMode } from './lib/stores.js';
+  import { categories, category, records, status, clock, viewMode, notice } from './lib/stores.js';
   import { startClock, stopClock } from './lib/clock.js';
 
   let loadedCategory = null;
@@ -27,20 +28,48 @@
 
   onDestroy(() => stopClock());
 
-  // Load TLEs whenever the chosen category changes.
+  // Load TLEs whenever the chosen category changes. On the very first load we
+  // allow a fallback so a throttled default (CelesTrak rate-limits the big
+  // "active" group to once per ~2 h per IP) never leaves the map empty.
+  let firstLoad = true;
   $: if ($category && $category !== loadedCategory) {
     loadedCategory = $category;
-    loadCategory($category);
+    const allowFallback = firstLoad;
+    firstLoad = false;
+    loadCategory($category, allowFallback);
   }
 
-  async function loadCategory(cat) {
+  async function setRecords(cat) {
+    const res = await fetchTles(cat);
+    const recs = res.satellites.map(toSatrec).filter(Boolean);
+    if (!recs.length) throw new Error('No satellites returned.');
+    records.set(recs);
+    status.set({ loading: false, error: null, count: recs.length });
+  }
+
+  async function loadCategory(cat, allowFallback = false) {
     status.set({ loading: true, error: null, count: get(status).count });
+    notice.set(null);
     try {
-      const res = await fetchTles(cat);
-      const recs = res.satellites.map(toSatrec).filter(Boolean);
-      records.set(recs);
-      status.set({ loading: false, error: null, count: recs.length });
+      await setRecords(cat);
     } catch (e) {
+      // Fall back to a reliable, dense category so the first view is never empty.
+      if (allowFallback) {
+        for (const fb of ['starlink', 'stations']) {
+          if (fb === cat) continue;
+          try {
+            await setRecords(fb);
+            loadedCategory = fb;
+            category.set(fb);
+            notice.set(
+              `“${getCategory(cat)?.label ?? cat}” is rate-limited by CelesTrak right now — showing ${getCategory(fb)?.label ?? fb} instead. Pick any category to switch.`
+            );
+            return;
+          } catch {
+            /* try the next fallback */
+          }
+        }
+      }
       records.set([]);
       status.set({ loading: false, error: e.message, count: 0 });
     }

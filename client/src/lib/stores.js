@@ -39,6 +39,7 @@ export const overheadTotal = writable(0); // total above the horizon (before the
 export const selected = writable(null); // selected NORAD id | null
 export const selectedState = writable(null); // live position/look-angles for selected sat
 export const status = writable({ loading: false, error: null, count: 0 });
+export const notice = writable(null); // transient info (e.g. a fallback happened)
 export const clock = writable({ time: Date.now(), speed: 1, paused: false });
 export const pickMode = writable(false); // true while user is clicking the map to set location
 export const focusRequest = writable(null); // { lat, lon, zoom } | null — request map re-center

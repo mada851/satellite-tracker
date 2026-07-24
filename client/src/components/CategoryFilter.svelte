@@ -1,5 +1,5 @@
 <script>
-  import { category, categories, status } from '../lib/stores.js';
+  import { category, categories, status, notice } from '../lib/stores.js';
 </script>
 
 <section class="panel">
@@ -22,6 +22,9 @@
     <p class="hint error">{$status.error}</p>
   {:else}
     <p class="hint">{$status.count.toLocaleString()} satellites loaded</p>
+  {/if}
+  {#if $notice}
+    <p class="hint notice">{$notice}</p>
   {/if}
 </section>
 
@@ -50,5 +53,11 @@
     color: #06231f;
     border-color: var(--accent);
     font-weight: 600;
+  }
+  .hint.notice {
+    color: var(--accent-2);
+    border-left: 2px solid var(--accent-2);
+    padding-left: 8px;
+    margin-top: 6px;
   }
 </style>
