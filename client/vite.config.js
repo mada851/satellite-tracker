@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [svelte()],
   server: {
     port: 5173,
+    allowedHosts: ['client-production-e1a5.up.railway.app', 'server.railway.internal'],
   },
   build: {
     // The 3D globe (three.js) is a large but lazy-loaded chunk; this is expected.
