@@ -1,0 +1,8 @@
+# Netlify: deploy the static client. No backend needed — the app fetches
+# CelesTrak directly from the browser.
+[build]
+  command = "npm run build"
+  publish = "client/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
